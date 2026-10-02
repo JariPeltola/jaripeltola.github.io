@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="fi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<title>Valvomo</title>
+<style>
+  :root {
+    --bg: #0f1218; --card: #171b23; --text: #e5e7eb; --muted: #8b93a1;
+    --line: #262c37; --accent: #3b82f6; --bad: #f87171;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
+           padding: 14px 20px 8px; }
+  header h1 { font-size: 20px; margin: 0; font-weight: 650; }
+  header small { color: var(--muted); font-size: 13px; }
+  #clock { color: var(--muted); font-variant-numeric: tabular-nums; margin-left: auto; }
+  header button { font: inherit; font-size: 13px; color: var(--muted); background: none;
+                  border: 1px solid var(--line); border-radius: 6px; padding: 3px 10px; cursor: pointer; }
+  header button:hover { color: var(--text); border-color: var(--muted); }
+  .err { color: var(--bad); font-size: 13px; padding: 0 20px; }
+  .err:empty { display: none; }
+
+  /* kirjautuminen */
+  #login { max-width: 380px; margin: 12vh auto 0; padding: 26px 24px; background: var(--card);
+           border: 1px solid var(--line); border-radius: 12px; }
+  #login h2 { margin: 0 0 4px; font-size: 20px; }
+  #login > p { margin: 0 0 18px; color: var(--muted); font-size: 13px; }
+  form { display: grid; gap: 10px; font-size: 13px; }
+  label { display: grid; gap: 4px; color: var(--muted); }
+  input { font: inherit; font-size: 14px; color: var(--text); background: var(--bg);
+          padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; }
+  input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .btn { font: inherit; font-size: 14px; padding: 9px 14px; border-radius: 6px; cursor: pointer;
+         border: 1px solid var(--accent); background: var(--accent); color: #fff; }
+  .btn.ghost { background: none; color: var(--text); border-color: var(--line); }
+  details { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 12px; font-size: 13px; }
+  summary { cursor: pointer; color: var(--muted); }
+  details form { margin-top: 10px; }
+  #login .err { padding: 0; margin-top: 12px; }
+  .note { color: var(--muted); font-size: 12px; margin: 0; }
+
+  /* kamerat */
+  #grid { display: grid; gap: 12px; padding: 8px 20px 20px;
+          grid-template-columns: repeat(auto-fill, minmax(min(100%, 460px), 1fr)); }
+  .cam { position: relative; margin: 0; border-radius: 10px; overflow: hidden;
+         background: #000; aspect-ratio: 16 / 9; cursor: zoom-in; }
+  .cam img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .cam figcaption { position: absolute; left: 0; right: 0; bottom: 0; display: flex;
+                    justify-content: space-between; gap: 8px; padding: 16px 10px 6px;
+                    font-size: 13px; color: #fff;
+                    background: linear-gradient(transparent, rgba(0,0,0,.75)); }
+  .cam figcaption time { font-variant-numeric: tabular-nums; opacity: .85; }
+  .cam.stale figcaption time { color: #fca5a5; opacity: 1; }
+  .cam .msg { position: absolute; inset: 0; display: grid; place-items: center;
+              color: var(--muted); font-size: 13px; text-align: center; padding: 10px; }
+
+  #settings { margin: 0 20px 12px; padding: 14px 16px; background: var(--card);
+              border: 1px solid var(--line); border-radius: 10px; max-width: 520px; }
+  #settings .row { display: flex; gap: 8px; }
+
+  #big { padding: 0; border: 0; background: #000; max-width: 98vw; max-height: 96vh; }
+  #big::backdrop { background: rgba(0,0,0,.85); }
+  #big img { display: block; max-width: 98vw; max-height: 92vh; cursor: zoom-out; }
+  #big p { margin: 0; color: #fff; font-size: 13px; padding: 6px 10px; }
+</style>
+</head>
+<body>
+
+<!-- Kirjautumisnäkymä -->
+<section id="login" hidden>
+  <h2>Valvomo</h2>
+  <p>Kirjaudu Home Assistantin tunnuksillasi.</p>
+  <form id="login-form">
+    <label>Home Assistantin osoite
+      <input name="url" type="url" value="https://ha.jarippeltola.com" required></label>
+    <button class="btn" type="submit">Kirjaudu</button>
+  </form>
+  <details>
+    <summary>Kirjaudu pitkäikäisellä tunnuksella</summary>
+    <form id="token-form">
+      <label>Tunnus (HA → profiili → Suojaus → Pitkäikäiset käyttöoikeustunnukset)
+        <input name="token" type="password" autocomplete="off" required></label>
+      <button class="btn ghost" type="submit">Kirjaudu tunnuksella</button>
+    </form>
+  </details>
+  <div class="err" id="login-err"></div>
+</section>
+
+<!-- Kameranäkymä -->
+<div id="app" hidden>
+  <header>
+    <h1>Valvomo</h1>
+    <small id="info"></small>
+    <span id="clock"></span>
+    <button type="button" id="cfg-btn">Asetukset</button>
+    <button type="button" id="logout">Kirjaudu ulos</button>
+  </header>
+  <section id="settings" hidden>
+    <form id="cfg-form">
+      <label>Kamerat (tyhjä = kaikki), pilkuilla erotettuna
+        <input name="ids" placeholder="camera.etupiha, camera.etuovi"></label>
+      <label>Päivitysväli, sekuntia
+        <input name="every" type="number" min="2" max="300" value="5"></label>
+      <div class="row">
+        <button class="btn" type="submit">Tallenna</button>
+        <button class="btn ghost" type="button" id="cfg-cancel">Peruuta</button>
+      </div>
+    </form>
+  </section>
+  <div class="err" id="err"></div>
+  <div id="grid"></div>
+</div>
+<dialog id="big"><img alt=""><p></p></dialog>
+
+<script>
+// Valvomo näyttää Home Assistantin kamerat vain kirjautuneelle käyttäjälle.
+// Sivu itsessään on julkista staattista HTML:ää eikä sisällä mitään salaista:
+// kaikki kuvat haetaan Home Assistantista, joka vaatii kirjautumisen. Kirjautumistiedot
+// tallentuvat vain tämän selaimen muistiin.
+//
+// Kirjautuminen tehdään HA:n omalla kirjautumissivulla (OAuth). Tunnuksen vaihto
+// vaatii HA:n configuration.yamliin:
+//   http:
+//     cors_allowed_origins:
+//       - https://jarippeltola.com
+
+const AUTH_KEY = "valvomo-auth";        // { ha, mode: "oauth"|"token", access, refresh, expires }
+const CFG_KEY = "valvomo-cfg";          // { ids, every }
+const OLD_KEY = "kojelauta-ha";         // kojelaudan vanha asetus, siirretään tänne
+const CLIENT_ID = location.origin + "/";
+const REDIRECT = location.origin + location.pathname;
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"']/g, c =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const load = k => { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } };
+const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} };
+const drop = k => { try { localStorage.removeItem(k); } catch (e) {} };
+
+let auth = load(AUTH_KEY);
+let cfg = load(CFG_KEY) || { ids: [], every: 5 };
+
+// Kojelaudan aiemmin tallentama tunnus (sama verkkotunnus) otetaan käyttöön kerran.
+(() => {
+  const old = load(OLD_KEY);
+  if (!old) return;
+  if (!auth && old.url && old.token) {
+    auth = { ha: old.url.replace(/\/+$/, ""), mode: "token", access: old.token };
+    save(AUTH_KEY, auth);
+    if (old.ids?.length || old.every) { cfg = { ids: old.ids || [], every: old.every || 5 }; save(CFG_KEY, cfg); }
+  }
+  drop(OLD_KEY);
+})();
+
+// ---------- kirjautuminen ----------
+async function tokenRequest(ha, params) {
+  let r;
+  try {
+    r = await fetch(ha + "/auth/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ client_id: CLIENT_ID, ...params }),
+    });
+  } catch (e) {
+    throw new Error("Home Assistant ei sallinut kirjautumista tältä sivulta. Lisää HA:n " +
+      "configuration.yamliin http → cors_allowed_origins: " + location.origin +
+      " ja käynnistä HA uudelleen, tai kirjaudu pitkäikäisellä tunnuksella.");
+  }
+  if (!r.ok) throw new Error(r.status === 400 ? "kirjautuminen vanheni, kirjaudu uudelleen" : "HA vastasi " + r.status);
+  return r.json();
+}
+
+function startLogin(ha) {
+  const nonce = crypto.getRandomValues(new Uint32Array(2)).join("");
+  sessionStorage.setItem("valvomo-login", JSON.stringify({ ha, nonce }));
+  location.href = ha + "/auth/authorize?" + new URLSearchParams({
+    response_type: "code", client_id: CLIENT_ID, redirect_uri: REDIRECT, state: nonce,
+  });
+}
+
+async function finishLogin() {           // paluu HA:n kirjautumissivulta
+  const q = new URLSearchParams(location.search);
+  if (!q.has("code")) return false;
+  history.replaceState(null, "", REDIRECT);
+  const pending = JSON.parse(sessionStorage.getItem("valvomo-login") || "null");
+  sessionStorage.removeItem("valvomo-login");
+  if (!pending || pending.nonce !== q.get("state")) throw new Error("kirjautuminen keskeytyi, yritä uudelleen");
+  const t = await tokenRequest(pending.ha, { grant_type: "authorization_code", code: q.get("code") });
+  auth = { ha: pending.ha, mode: "oauth", access: t.access_token, refresh: t.refresh_token,
+           expires: Date.now() + t.expires_in * 1000 };
+  save(AUTH_KEY, auth);
+  return true;
+}
+
+async function accessToken() {
+  if (auth.mode === "oauth" && Date.now() > auth.expires - 60000) {
+    const t = await tokenRequest(auth.ha, { grant_type: "refresh_token", refresh_token: auth.refresh });
+    auth.access = t.access_token; auth.expires = Date.now() + t.expires_in * 1000;
+    save(AUTH_KEY, auth);
+  }
+  return auth.access;
+}
+
+async function logout() {
+  stop();
+  if (auth?.mode === "oauth") {          // mitätöidään tunnus myös HA:ssa
+    try { await fetch(auth.ha + "/auth/revoke", { method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ token: auth.refresh }) }); } catch (e) {}
+  }
+  auth = null; drop(AUTH_KEY);
+  showLogin();
+}
+
+function showLogin(msg = "") {
+  $("app").hidden = true; $("login").hidden = false;
+  $("login-err").textContent = msg;
+  if (auth?.ha) $("login-form").elements.url.value = auth.ha;
+}
+
+$("login-form").addEventListener("submit", ev => {
+  ev.preventDefault();
+  startLogin(ev.target.elements.url.value.trim().replace(/\/+$/, ""));
+});
+$("token-form").addEventListener("submit", ev => {
+  ev.preventDefault();
+  auth = { ha: $("login-form").elements.url.value.trim().replace(/\/+$/, ""),
+           mode: "token", access: ev.target.elements.token.value.trim() };
+  ev.target.reset();
+  save(AUTH_KEY, auth);
+  start();
+});
+
+// ---------- Home Assistant -yhteys (websocket) ----------
+let ws = null, seq = 0;
+const waiting = new Map();
+function wsClose() {
+  if (ws) { ws.onclose = null; ws.close(); }
+  ws = null;
+  waiting.forEach(w => w.reject(new Error("yhteys katkesi"))); waiting.clear();
+}
+async function wsConnect() {
+  wsClose();
+  const token = await accessToken();
+  return new Promise((resolve, reject) => {
+    let s;
+    try { s = new WebSocket(auth.ha.replace(/^http/, "ws") + "/api/websocket"); }
+    catch (e) { return reject(new Error("osoite ei kelpaa")); }
+    s.onerror = s.onclose = () => reject(new Error("ei yhteyttä Home Assistantiin"));
+    s.onmessage = ev => {
+      const m = JSON.parse(ev.data);
+      if (m.type === "auth_required") s.send(JSON.stringify({ type: "auth", access_token: token }));
+      else if (m.type === "auth_invalid") {
+        s.onclose = null; s.close();
+        const e = new Error("kirjautuminen ei kelpaa"); e.auth = true; reject(e);
+      } else if (m.type === "auth_ok") {
+        ws = s;
+        s.onclose = () => { ws = null; waiting.forEach(w => w.reject(new Error("yhteys katkesi"))); waiting.clear(); };
+        s.onmessage = ev2 => {
+          const r = JSON.parse(ev2.data), w = waiting.get(r.id);
+          if (!w) return;
+          waiting.delete(r.id);
+          r.success ? w.resolve(r.result) : w.reject(new Error(r.error?.message || "virhe"));
+        };
+        resolve();
+      }
+    };
+  });
+}
+async function call(msg) {
+  if (!ws) await wsConnect();
+  const id = ++seq;
+  return new Promise((resolve, reject) => {
+    waiting.set(id, { resolve, reject });
+    ws.send(JSON.stringify({ id, ...msg }));
+    setTimeout(() => { if (waiting.delete(id)) reject(new Error("ei vastausta")); }, 15000);
+  });
+}
+
+// ---------- kamerat ----------
+let cams = [], timer = null, bigCam = null;
+
+function stop() { clearInterval(timer); timer = null; wsClose(); cams = []; $("grid").innerHTML = ""; }
+
+async function start() {
+  stop();
+  $("login").hidden = true; $("app").hidden = false;
+  $("err").textContent = ""; $("info").textContent = "yhdistetään…";
+  try {
+    const states = await call({ type: "get_states" });
+    const user = await call({ type: "auth/current_user" }).catch(() => null);
+    const want = cfg.ids || [];
+    const found = states.filter(s => s.entity_id.startsWith("camera.") &&
+                                     (!want.length || want.includes(s.entity_id)));
+    if (want.length) found.sort((a, b) => want.indexOf(a.entity_id) - want.indexOf(b.entity_id));
+    const missing = want.filter(id => !found.some(s => s.entity_id === id));
+    if (!found.length) throw new Error("Home Assistantista ei löytynyt kameroita");
+    cams = found.map(s => {
+      const name = s.attributes.friendly_name || s.entity_id;
+      const fig = document.createElement("figure");
+      fig.className = "cam";
+      fig.innerHTML = `<div class="msg">ladataan…</div><img alt="" hidden>` +
+        `<figcaption><span>${esc(name)}</span><time></time></figcaption>`;
+      $("grid").append(fig);
+      const cam = { id: s.entity_id, name, fig, img: fig.querySelector("img"),
+                    msg: fig.querySelector(".msg"), time: fig.querySelector("time"),
+                    url: null, ok: 0, busy: false };
+      fig.addEventListener("click", () => openBig(cam));
+      return cam;
+    });
+    $("info").textContent = `${cams.length} kameraa · ${cfg.every || 5} s välein` +
+                            (user?.name ? ` · ${user.name}` : "");
+    if (missing.length) $("err").textContent = "Ei löytynyt: " + missing.join(", ");
+    refresh();
+    timer = setInterval(refresh, (cfg.every || 5) * 1000);
+  } catch (e) {
+    if (e.auth || /kirjaudu/.test(e.message)) { auth.access = null; return logout().then(() => showLogin(e.message)); }
+    $("info").textContent = "";
+    $("err").textContent = e.message + " – yritetään uudelleen 30 s päästä.";
+    timer = setTimeout(start, 30000);
+  }
+}
+
+async function refreshCam(cam) {
+  if (cam.busy) return;
+  cam.busy = true;
+  try {
+    const signed = await call({ type: "auth/sign_path", path: `/api/camera_proxy/${cam.id}`, expires: 30 });
+    const url = auth.ha + signed.path;
+    await new Promise((ok, bad) => {     // ladataan taustalla, ettei kuva välähdä
+      const im = new Image();
+      im.onload = ok; im.onerror = () => bad(new Error("kamera ei antanut kuvaa"));
+      im.src = url;
+    });
+    cam.url = url;
+    cam.img.src = url; cam.img.hidden = false; cam.msg.hidden = true;
+    if (bigCam === cam) $("big").querySelector("img").src = url;
+    cam.ok = Date.now();
+    cam.time.textContent = new Date(cam.ok).toLocaleTimeString("fi-FI");
+    cam.fig.classList.remove("stale");
+  } catch (e) {
+    if (!cam.ok) { cam.msg.textContent = e.message; cam.msg.hidden = false; }
+    if (!ws) $("err").textContent = e.message;
+  } finally { cam.busy = false; }
+}
+
+function refresh() {
+  if (document.hidden) return;           // ei haeta taustalla olevaan välilehteen
+  const every = (cfg.every || 5) * 1000;
+  for (const cam of cams) {
+    refreshCam(cam);
+    if (cam.ok) cam.fig.classList.toggle("stale", Date.now() - cam.ok > 3 * every + 2000);
+  }
+  if (!ws && cams.length) $("err").textContent = "Yhteys katkesi, yhdistetään uudelleen…";
+  else if (ws && $("err").textContent.startsWith("Yhteys")) $("err").textContent = "";
+}
+
+function openBig(cam) {
+  if (!cam.url) return;
+  bigCam = cam;
+  $("big").querySelector("img").src = cam.url;
+  $("big").querySelector("p").textContent = cam.name;
+  $("big").showModal();
+}
+$("big").addEventListener("click", () => $("big").close());
+$("big").addEventListener("close", () => { bigCam = null; });
+
+// ---------- asetukset ----------
+$("cfg-btn").addEventListener("click", () => {
+  const f = $("cfg-form").elements;
+  f.ids.value = (cfg.ids || []).join(", "); f.every.value = cfg.every || 5;
+  $("settings").hidden = !$("settings").hidden;
+});
+$("cfg-cancel").addEventListener("click", () => { $("settings").hidden = true; });
+$("cfg-form").addEventListener("submit", ev => {
+  ev.preventDefault();
+  const f = ev.target.elements;
+  cfg = { ids: f.ids.value.split(/[\s,]+/).filter(Boolean),
+          every: Math.min(300, Math.max(2, +f.every.value || 5)) };
+  save(CFG_KEY, cfg);
+  $("settings").hidden = true;
+  start();
+});
+$("logout").addEventListener("click", logout);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
+
+const tick = () => { $("clock").textContent = new Date().toLocaleString("fi-FI",
+  { weekday: "short", day: "numeric", month: "numeric", hour: "2-digit", minute: "2-digit" }); };
+tick(); setInterval(tick, 15000);
+
+// ---------- käynnistys ----------
+(async () => {
+  try { await finishLogin(); }
+  catch (e) { return showLogin(e.message); }
+  auth ? start() : showLogin();
+})();
+</script>
+</body>
+</html>
