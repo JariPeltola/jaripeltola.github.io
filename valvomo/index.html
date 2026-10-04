@@ -107,7 +107,7 @@
       <label>Kamerat (tyhjä = kaikki), pilkuilla erotettuna
         <input name="ids" placeholder="camera.etupiha, camera.etuovi"></label>
       <label>Päivitysväli, sekuntia
-        <input name="every" type="number" min="2" max="300" value="5"></label>
+        <input name="every" type="number" min="2" max="300" value="15"></label>
       <div class="row">
         <button class="btn" type="submit">Tallenna</button>
         <button class="btn ghost" type="button" id="cfg-cancel">Peruuta</button>
@@ -132,7 +132,9 @@
 //       - https://jarippeltola.com
 
 const AUTH_KEY = "valvomo-auth";        // { ha, mode: "oauth"|"token", access, refresh, expires }
-const CFG_KEY = "valvomo-cfg";          // { ids, every }
+const CFG_KEY = "valvomo-cfg";          // { ids, every, v }
+// Oletusjärjestys, kun kameroita ei ole valittu asetuksissa.
+const DEFAULT_ORDER = ["etuovi", "etupiha", "takapiha"];
 const OLD_KEY = "kojelauta-ha";         // kojelaudan vanha asetus, siirretään tänne
 const CLIENT_ID = location.origin + "/";
 const REDIRECT = location.origin + location.pathname;
@@ -145,7 +147,8 @@ const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } cat
 const drop = k => { try { localStorage.removeItem(k); } catch (e) {} };
 
 let auth = load(AUTH_KEY);
-let cfg = load(CFG_KEY) || { ids: [], every: 5 };
+let cfg = load(CFG_KEY) || { ids: [], every: 15, v: 2 };
+if (cfg.v !== 2) { cfg.every = 15; cfg.v = 2; save(CFG_KEY, cfg); }   // vanha oletus 5 s → 15 s
 
 // Kojelaudan aiemmin tallentama tunnus (sama verkkotunnus) otetaan käyttöön kerran.
 (() => {
@@ -154,7 +157,7 @@ let cfg = load(CFG_KEY) || { ids: [], every: 5 };
   if (!auth && old.url && old.token) {
     auth = { ha: old.url.replace(/\/+$/, ""), mode: "token", access: old.token };
     save(AUTH_KEY, auth);
-    if (old.ids?.length || old.every) { cfg = { ids: old.ids || [], every: old.every || 5 }; save(CFG_KEY, cfg); }
+    if (old.ids?.length || old.every) { cfg = { ids: old.ids || [], every: 15, v: 2 }; save(CFG_KEY, cfg); }
   }
   drop(OLD_KEY);
 })();
@@ -285,9 +288,10 @@ async function call(msg) {
 }
 
 // ---------- kamerat ----------
-let cams = [], timer = null, bigCam = null;
+let cams = [], timer = null, bigCam = null, camTimers = [];
 
-function stop() { clearInterval(timer); timer = null; wsClose(); cams = []; $("grid").innerHTML = ""; }
+function stopCamTimers() { camTimers.forEach(t => { clearTimeout(t); clearInterval(t); }); camTimers = []; }
+function stop() { clearTimeout(timer); timer = null; stopCamTimers(); wsClose(); cams = []; $("grid").innerHTML = ""; }
 
 async function start() {
   stop();
@@ -299,7 +303,9 @@ async function start() {
     const want = cfg.ids || [];
     const found = states.filter(s => s.entity_id.startsWith("camera.") &&
                                      (!want.length || want.includes(s.entity_id)));
+    const rank = s => { const k = DEFAULT_ORDER.findIndex(n => s.entity_id.includes(n)); return k < 0 ? 99 : k; };
     if (want.length) found.sort((a, b) => want.indexOf(a.entity_id) - want.indexOf(b.entity_id));
+    else found.sort((a, b) => rank(a) - rank(b));
     const missing = want.filter(id => !found.some(s => s.entity_id === id));
     if (!found.length) throw new Error("Home Assistantista ei löytynyt kameroita");
     cams = found.map(s => {
@@ -315,11 +321,10 @@ async function start() {
       fig.addEventListener("click", () => openBig(cam));
       return cam;
     });
-    $("info").textContent = `${cams.length} kameraa · ${cfg.every || 5} s välein` +
+    $("info").textContent = `${cams.length} kameraa · ${every()} s välein, vuorotellen` +
                             (user?.name ? ` · ${user.name}` : "");
     if (missing.length) $("err").textContent = "Ei löytynyt: " + missing.join(", ");
-    refresh();
-    timer = setInterval(refresh, (cfg.every || 5) * 1000);
+    schedule();
   } catch (e) {
     if (e.auth || /kirjaudu/.test(e.message)) { auth.access = null; return logout().then(() => showLogin(e.message)); }
     $("info").textContent = "";
@@ -351,15 +356,28 @@ async function refreshCam(cam) {
   } finally { cam.busy = false; }
 }
 
-function refresh() {
+const every = () => cfg.every || 15;
+
+// Jokainen kamera päivittyy omalla ajastimellaan `every` sekunnin välein, mutta eri
+// hetkellä: 3 kameraa ja 15 s → Etuovi 0 s, Etupiha 5 s, Takapiha 10 s. Näin kuvat
+// eivät kilpaile samasta kaistasta.
+function schedule() {
+  stopCamTimers();
+  const ms = every() * 1000, gap = ms / Math.max(1, cams.length);
+  cams.forEach((cam, i) => {
+    camTimers.push(setTimeout(() => {
+      tickCam(cam);
+      camTimers.push(setInterval(() => tickCam(cam), ms));
+    }, i * gap));
+  });
+}
+
+function tickCam(cam) {
   if (document.hidden) return;           // ei haeta taustalla olevaan välilehteen
-  const every = (cfg.every || 5) * 1000;
-  for (const cam of cams) {
-    refreshCam(cam);
-    if (cam.ok) cam.fig.classList.toggle("stale", Date.now() - cam.ok > 3 * every + 2000);
-  }
-  if (!ws && cams.length) $("err").textContent = "Yhteys katkesi, yhdistetään uudelleen…";
-  else if (ws && $("err").textContent.startsWith("Yhteys")) $("err").textContent = "";
+  refreshCam(cam);
+  if (cam.ok) cam.fig.classList.toggle("stale", Date.now() - cam.ok > 2 * every() * 1000 + 5000);
+  if (!ws) $("err").textContent = "Yhteys katkesi, yhdistetään uudelleen…";
+  else if ($("err").textContent.startsWith("Yhteys")) $("err").textContent = "";
 }
 
 function openBig(cam) {
@@ -375,7 +393,7 @@ $("big").addEventListener("close", () => { bigCam = null; });
 // ---------- asetukset ----------
 $("cfg-btn").addEventListener("click", () => {
   const f = $("cfg-form").elements;
-  f.ids.value = (cfg.ids || []).join(", "); f.every.value = cfg.every || 5;
+  f.ids.value = (cfg.ids || []).join(", "); f.every.value = every();
   $("settings").hidden = !$("settings").hidden;
 });
 $("cfg-cancel").addEventListener("click", () => { $("settings").hidden = true; });
@@ -383,13 +401,14 @@ $("cfg-form").addEventListener("submit", ev => {
   ev.preventDefault();
   const f = ev.target.elements;
   cfg = { ids: f.ids.value.split(/[\s,]+/).filter(Boolean),
-          every: Math.min(300, Math.max(2, +f.every.value || 5)) };
+          every: Math.min(300, Math.max(2, +f.every.value || 15)), v: 2 };
   save(CFG_KEY, cfg);
   $("settings").hidden = true;
   start();
 });
 $("logout").addEventListener("click", logout);
-document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
+// Välilehdelle palatessa ajastus aloitetaan alusta, jotta kuvat tulevat taas porrastetusti.
+document.addEventListener("visibilitychange", () => { if (!document.hidden && cams.length) schedule(); });
 
 const tick = () => { $("clock").textContent = new Date().toLocaleString("fi-FI",
   { weekday: "short", day: "numeric", month: "numeric", hour: "2-digit", minute: "2-digit" }); };
