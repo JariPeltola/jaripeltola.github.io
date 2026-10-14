@@ -5,7 +5,9 @@ Etusivu ohjaa osoitteeseen [/kojelauta/](https://jarippeltola.com/kojelauta/), j
 
 ## Valvomo – https://jarippeltola.com/valvomo/
 
-Home Assistantin valvontakamerat, näkyvät vain kirjautuneelle. Sivu (`valvomo/index.html`)
+Home Assistantin valvontakamerat ja Ecowitt-sääaseman lukemat (ulkona, sisällä,
+ilmanpaine + 24 h käyrät), näkyvät vain kirjautuneelle. Sääaseman anturit haetaan
+HA:sta automaattisesti Ecowitt-integraation entiteeteistä; jos asemaa ei ole, rivi ei näy. Sivu (`valvomo/index.html`)
 on staattinen eikä sisällä mitään salaista: kaikki kuvat haetaan Home Assistantista
 (https://ha.jarippeltola.com), joka vaatii kirjautumisen. Kuvat ladataan HA:n
 allekirjoittamilla, 30 s voimassa olevilla linkeillä.

@@ -61,6 +61,25 @@
   .cam .msg { position: absolute; inset: 0; display: grid; place-items: center;
               color: var(--muted); font-size: 13px; text-align: center; padding: 10px; }
 
+  /* sääasema (Ecowitt) */
+  #wx { display: grid; gap: 12px; padding: 8px 20px 4px;
+        grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr)); }
+  .tile { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+          padding: 12px 14px; min-width: 0; }
+  .tile h3 { display: flex; justify-content: space-between; gap: 8px; margin: 0 0 4px;
+             font-size: 12px; font-weight: 600; color: var(--muted);
+             text-transform: uppercase; letter-spacing: .04em; }
+  .tile h3 time { text-transform: none; letter-spacing: 0; font-weight: 400;
+                  font-variant-numeric: tabular-nums; }
+  .tile h3 time.stale { color: var(--bad); }
+  .tile .big { font-size: 30px; font-weight: 650; line-height: 1.15;
+               font-variant-numeric: tabular-nums; }
+  .tile .sub { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+  .tile .warn { color: var(--bad); font-size: 13px; }
+  .tile svg { display: block; width: 100%; height: 36px; margin-top: 8px; overflow: visible; }
+  .tile svg path { fill: none; stroke: var(--accent); stroke-width: 1.6;
+                   vector-effect: non-scaling-stroke; stroke-linejoin: round; }
+
   #settings { margin: 0 20px 12px; padding: 14px 16px; background: var(--card);
               border: 1px solid var(--line); border-radius: 10px; max-width: 520px; }
   #settings .row { display: flex; gap: 8px; }
@@ -115,6 +134,7 @@
     </form>
   </section>
   <div class="err" id="err"></div>
+  <section id="wx" hidden aria-label="Sääasema"></section>
   <div id="grid"></div>
 </div>
 <dialog id="big"><img alt=""><p></p></dialog>
@@ -291,7 +311,7 @@ async function call(msg) {
 let cams = [], timer = null, bigCam = null, camTimers = [];
 
 function stopCamTimers() { camTimers.forEach(t => { clearTimeout(t); clearInterval(t); }); camTimers = []; }
-function stop() { clearTimeout(timer); timer = null; stopCamTimers(); wsClose(); cams = []; $("grid").innerHTML = ""; }
+function stop() { clearTimeout(timer); timer = null; stopCamTimers(); wxStop(); wsClose(); cams = []; $("grid").innerHTML = ""; }
 
 async function start() {
   stop();
@@ -299,6 +319,7 @@ async function start() {
   $("err").textContent = ""; $("info").textContent = "yhdistetään…";
   try {
     const states = await call({ type: "get_states" });
+    wxStart(states);                     // sääasema omana rivinään, ei odoteta
     const user = await call({ type: "auth/current_user" }).catch(() => null);
     const want = cfg.ids || [];
     const found = states.filter(s => s.entity_id.startsWith("camera.") &&
@@ -389,6 +410,122 @@ function openBig(cam) {
 }
 $("big").addEventListener("click", () => $("big").close());
 $("big").addEventListener("close", () => { bigCam = null; });
+
+// ---------- sääasema (Ecowitt) ----------
+// Ecowitt-integraation anturit etsitään HA:n entiteettirekisteristä (platform "ecowitt"),
+// joten uusi anturi tai uudelleennimetty asema ei vaadi muutoksia tähän sivuun.
+// Lukemat päivitetään minuutin välein (asema lähettää HA:lle 60 s välein),
+// 24 tunnin käyrät 10 minuutin välein.
+const WX_KEYS = {
+  outT: /^sensor\..*_temperature_1$/,   outH: /^sensor\..*_humidity_1$/,
+  outDp: /^sensor\..*_dewpoint_1$/,     outBat: /^binary_sensor\..*_battery_1$/,
+  inT: /^sensor\..*_indoor_temperature$/, inH: /^sensor\..*_indoor_humidity$/,
+  inDp: /^sensor\..*_indoor_dewpoint$/, p: /^sensor\..*_relative_pressure$/,
+};
+let wx = null, wxTimers = [];
+
+function wxStop() { wxTimers.forEach(clearInterval); wxTimers = []; wx = null;
+                    $("wx").hidden = true; $("wx").innerHTML = ""; }
+
+async function wxStart(states) {
+  wxStop();
+  try {
+    let ids = [];
+    try {
+      const reg = await call({ type: "config/entity_registry/list_for_display" });
+      ids = reg.entities.filter(e => e.pl === "ecowitt").map(e => e.ei);
+    } catch (e) {}
+    if (!ids.length) ids = states.map(s => s.entity_id).filter(id => /ecowitt|wn18|gw[12]\d{3}|ws\d{4}/i.test(id));
+    const pick = {};
+    for (const [k, re] of Object.entries(WX_KEYS)) pick[k] = ids.find(id => re.test(id));
+    if (!pick.outT && !pick.inT && !pick.p) return;          // ei sääasemaa
+    wx = { ids: pick, states: {}, hist: {} };
+    wxRender(states);
+    wxHistory();
+    wxTimers.push(setInterval(async () => {
+      if (document.hidden || !wx) return;
+      try { wxRender(await call({ type: "get_states" })); } catch (e) {}
+    }, 60000));
+    wxTimers.push(setInterval(() => { if (!document.hidden) wxHistory(); }, 600000));
+  } catch (e) { /* sääasema ei saa kaataa kameroita */ }
+}
+
+async function wxHistory() {
+  if (!wx) return;
+  const want = [wx.ids.outT, wx.ids.p].filter(Boolean);
+  try {
+    const r = await call({ type: "history/history_during_period",
+      start_time: new Date(Date.now() - 24 * 3600e3).toISOString(),
+      entity_ids: want, minimal_response: true, no_attributes: true,
+      significant_changes_only: false });
+    for (const id of want) {
+      wx.hist[id] = (r[id] || []).map(x => [(x.lu || x.lc) * 1000, parseFloat(x.s)])
+                                 .filter(([t, v]) => isFinite(t) && isFinite(v));
+    }
+    wxRender();
+  } catch (e) {}
+}
+
+const fmt = (v, d = 1) => v == null ? "–" :
+  v.toLocaleString("fi-FI", { minimumFractionDigits: d, maximumFractionDigits: d, useGrouping: false });
+
+function spark(pts) {
+  if (!pts || pts.length < 2) return "";
+  const t0 = pts[0][0], t1 = pts[pts.length - 1][0] || t0 + 1;
+  const vs = pts.map(p => p[1]), lo = Math.min(...vs), hi = Math.max(...vs), span = hi - lo || 1;
+  const d = pts.map(([t, v], i) => `${i ? "L" : "M"}${((t - t0) / (t1 - t0 || 1) * 100).toFixed(2)},` +
+                                   `${(34 - (v - lo) / span * 32).toFixed(2)}`).join("");
+  return `<svg viewBox="0 0 100 36" preserveAspectRatio="none" aria-hidden="true"><path d="${d}"/></svg>`;
+}
+
+function wxRender(states) {
+  if (!wx) return;
+  if (states) for (const s of states) if (Object.values(wx.ids).includes(s.entity_id)) wx.states[s.entity_id] = s;
+  const st = k => wx.states[wx.ids[k]];
+  const val = k => { const n = parseFloat(st(k)?.state); return isFinite(n) ? n : null; };
+  const range = id => {
+    const vs = (wx.hist[id] || []).map(p => p[1]);
+    return vs.length ? `24 h: ${fmt(Math.min(...vs))} … ${fmt(Math.max(...vs))} °C` : "";
+  };
+  // historia + nykyinen lukema, jotta käyrä jatkuu tähän hetkeen asti
+  const curve = (id, v) => (wx.hist[id] || []).concat(v == null ? [] : [[Date.now(), v]]);
+  const tiles = [];
+
+  // aika, jolloin asema viimeksi lähetti dataa
+  const lu = Math.max(...Object.values(wx.states).map(s => Date.parse(s.last_updated) || 0));
+  const old = lu && Date.now() - lu > 10 * 60e3;
+  const when = lu ? `<time class="${old ? "stale" : ""}" title="${old ? "Asema ei ole lähettänyt dataa yli 10 minuuttiin" : "Viimeisin lukema"}">` +
+    new Date(lu).toLocaleTimeString("fi-FI", { hour: "2-digit", minute: "2-digit" }) + `</time>` : "";
+
+  if (wx.ids.outT) {
+    const sub = [val("outH") != null && `kosteus ${fmt(val("outH"), 0)} %`,
+                 val("outDp") != null && `kastepiste ${fmt(val("outDp"))} °C`].filter(Boolean).join(" · ");
+    tiles.push(`<div class="tile"><h3><span>Ulkona</span>${when}</h3>
+      <div class="big">${fmt(val("outT"))} °C</div><div class="sub">${sub}</div>
+      ${st("outBat")?.state === "on" ? `<div class="warn">Ulkoanturin paristo vähissä</div>` : ""}
+      ${spark(curve(wx.ids.outT, val("outT")))}<div class="sub">${range(wx.ids.outT)}</div></div>`);
+  }
+  if (wx.ids.inT) {
+    const sub = [val("inH") != null && `kosteus ${fmt(val("inH"), 0)} %`,
+                 val("inDp") != null && `kastepiste ${fmt(val("inDp"))} °C`].filter(Boolean).join(" · ");
+    tiles.push(`<div class="tile"><h3><span>Sisällä</span>${wx.ids.outT ? "" : when}</h3>
+      <div class="big">${fmt(val("inT"))} °C</div><div class="sub">${sub}</div></div>`);
+  }
+  if (wx.ids.p) {
+    const h = wx.hist[wx.ids.p] || [], now = val("p");
+    let trend = "";
+    const ago = h.filter(([t]) => t <= Date.now() - 3 * 3600e3).pop();   // ~3 h sitten
+    if (ago && now != null) {
+      const dv = now - ago[1];
+      trend = `3 h: ${dv > 0.5 ? "↑ nousee" : dv < -0.5 ? "↓ laskee" : "→ vakaa"} (${dv > 0 ? "+" : ""}${fmt(dv)} hPa)`;
+    }
+    tiles.push(`<div class="tile"><h3><span>Ilmanpaine</span>${wx.ids.outT || wx.ids.inT ? "" : when}</h3>
+      <div class="big">${fmt(now)} <small style="font-size:16px">hPa</small></div>
+      <div class="sub">${trend}</div>${spark(curve(wx.ids.p, now))}</div>`);
+  }
+  $("wx").innerHTML = tiles.join("");
+  $("wx").hidden = !tiles.length;
+}
 
 // ---------- asetukset ----------
 $("cfg-btn").addEventListener("click", () => {
