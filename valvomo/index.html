@@ -417,7 +417,7 @@ $("big").addEventListener("close", () => { bigCam = null; });
 // Lukemat päivitetään minuutin välein (asema lähettää HA:lle 60 s välein),
 // 24 tunnin käyrät 10 minuutin välein.
 const WX_KEYS = {
-  outT: /^sensor\..*_temperature_1$/,   outH: /^sensor\..*_humidity_1$/,
+  outT: /^sensor\..*_temperature_1$/,   outH: /^sensor\..*_(humidity_1|outdoor_humidity)$/,
   outDp: /^sensor\..*_dewpoint_1$/,     outBat: /^binary_sensor\..*_battery_1$/,
   inT: /^sensor\..*_indoor_temperature$/, inH: /^sensor\..*_indoor_humidity$/,
   inDp: /^sensor\..*_indoor_dewpoint$/, p: /^sensor\..*_relative_pressure$/,
@@ -452,7 +452,7 @@ async function wxStart(states) {
 
 async function wxHistory() {
   if (!wx) return;
-  const want = [wx.ids.outT, wx.ids.p].filter(Boolean);
+  const want = [wx.ids.outT, wx.ids.outH, wx.ids.inH, wx.ids.p].filter(Boolean);
   try {
     const r = await call({ type: "history/history_during_period",
       start_time: new Date(Date.now() - 24 * 3600e3).toISOString(),
@@ -483,9 +483,9 @@ function wxRender(states) {
   if (states) for (const s of states) if (Object.values(wx.ids).includes(s.entity_id)) wx.states[s.entity_id] = s;
   const st = k => wx.states[wx.ids[k]];
   const val = k => { const n = parseFloat(st(k)?.state); return isFinite(n) ? n : null; };
-  const range = id => {
+  const range = (id, unit = "°C", d = 1) => {
     const vs = (wx.hist[id] || []).map(p => p[1]);
-    return vs.length ? `24 h: ${fmt(Math.min(...vs))} … ${fmt(Math.max(...vs))} °C` : "";
+    return vs.length ? `24 h: ${fmt(Math.min(...vs), d)} … ${fmt(Math.max(...vs), d)} ${unit}` : "";
   };
   // historia + nykyinen lukema, jotta käyrä jatkuu tähän hetkeen asti
   const curve = (id, v) => (wx.hist[id] || []).concat(v == null ? [] : [[Date.now(), v]]);
@@ -498,18 +498,23 @@ function wxRender(states) {
     new Date(lu).toLocaleTimeString("fi-FI", { hour: "2-digit", minute: "2-digit" }) + `</time>` : "";
 
   if (wx.ids.outT) {
-    const sub = [val("outH") != null && `kosteus ${fmt(val("outH"), 0)} %`,
-                 val("outDp") != null && `kastepiste ${fmt(val("outDp"))} °C`].filter(Boolean).join(" · ");
+    const sub = [val("outDp") != null && `kastepiste ${fmt(val("outDp"))} °C`].filter(Boolean).join(" · ");
     tiles.push(`<div class="tile"><h3><span>Ulkona</span>${when}</h3>
       <div class="big">${fmt(val("outT"))} °C</div><div class="sub">${sub}</div>
       ${st("outBat")?.state === "on" ? `<div class="warn">Ulkoanturin paristo vähissä</div>` : ""}
       ${spark(curve(wx.ids.outT, val("outT")))}<div class="sub">${range(wx.ids.outT)}</div></div>`);
   }
   if (wx.ids.inT) {
-    const sub = [val("inH") != null && `kosteus ${fmt(val("inH"), 0)} %`,
-                 val("inDp") != null && `kastepiste ${fmt(val("inDp"))} °C`].filter(Boolean).join(" · ");
+    const sub = [val("inDp") != null && `kastepiste ${fmt(val("inDp"))} °C`].filter(Boolean).join(" · ");
     tiles.push(`<div class="tile"><h3><span>Sisällä</span>${wx.ids.outT ? "" : when}</h3>
       <div class="big">${fmt(val("inT"))} °C</div><div class="sub">${sub}</div></div>`);
+  }
+  // ilmankosteus ulkona ja sisällä omina ruutuinaan
+  for (const [k, label] of [["outH", "Kosteus ulkona"], ["inH", "Kosteus sisällä"]]) {
+    if (!wx.ids[k]) continue;
+    tiles.push(`<div class="tile"><h3><span>${label}</span></h3>
+      <div class="big">${fmt(val(k), 0)} <small style="font-size:16px">%</small></div>
+      ${spark(curve(wx.ids[k], val(k)))}<div class="sub">${range(wx.ids[k], "%", 0)}</div></div>`);
   }
   if (wx.ids.p) {
     const h = wx.hist[wx.ids.p] || [], now = val("p");
