@@ -593,6 +593,15 @@ async function hpHistory() {
   } catch (e) {}
 }
 
+// Pumpun anturi ilmoittaa kokonaisia asteita ja heiluu esim. 21↔22, joten käyrä
+// piirretään 30 minuutin keskiarvoista.
+function smooth(pts, ms = 30 * 60e3) {
+  const b = new Map();
+  for (const [t, v] of pts) { const k = Math.floor(t / ms); const x = b.get(k) || [0, 0, 0];
+                               x[0] += t; x[1] += v; x[2]++; b.set(k, x); }
+  return [...b.values()].map(([t, v, n]) => [t / n, v / n]);
+}
+
 function hpRender(states) {
   if (!hp) return;
   if (states) for (const s of states) if (hp.ids.includes(s.entity_id)) hp.states[s.entity_id] = s;
@@ -607,7 +616,7 @@ function hpRender(states) {
     const cur = isFinite(a.current_temperature) ? +a.current_temperature : null;
     const lc = Date.parse(s.last_changed);
     const since = lc ? `<time title="Tila muuttui viimeksi">${new Date(lc).toLocaleString("fi-FI",
-      { day: "numeric", month: "numeric", hour: "2-digit", minute: "2-digit" })}</time>` : "";
+      { day: "numeric", month: "numeric" })} alkaen</time>` : "";
     const det = off ? [] : [
       a.temperature != null && `asetus <b>${fmt(+a.temperature, 0)} °C</b>`,
       a.fan_mode && `puhallin ${HP_FAN[a.fan_mode] || a.fan_mode}`,
@@ -624,7 +633,7 @@ function hpRender(states) {
       tiles.push(`<div class="tile"><h3><span>Lämpötila pumpulla</span></h3>
         <div class="big">${fmt(cur, a.target_temp_step >= 1 ? 0 : 1)} °C</div>
         <div class="sub">pumpun oma anturi</div>
-        ${spark(h.concat([[Date.now(), cur]]))}
+        ${spark(smooth(h.concat([[Date.now(), cur]])))}
         <div class="sub">${vs.length ? `24 h: ${fmt(Math.min(...vs), 0)} … ${fmt(Math.max(...vs), 0)} °C` : ""}</div></div>`);
     }
   }
