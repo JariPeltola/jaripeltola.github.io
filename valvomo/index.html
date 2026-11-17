@@ -64,6 +64,13 @@
   /* sääasema (Ecowitt) */
   #wx { display: grid; gap: 12px; padding: 8px 20px 4px;
         grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr)); }
+  #hp { display: grid; gap: 12px; padding: 0 20px 20px;
+        grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr)); }
+  .tile .mode { display: inline-flex; align-items: center; gap: 8px; }
+  .tile .mode i { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); }
+  .tile .mode.heat i { background: #f97316; } .tile .mode.cool i { background: #38bdf8; }
+  .tile .mode.auto i { background: #a78bfa; } .tile .mode.dry i { background: #2dd4bf; }
+  .tile .mode.fan_only i { background: #94a3b8; }
   .tile { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
           padding: 12px 14px; min-width: 0; }
   .tile h3 { display: flex; justify-content: space-between; gap: 8px; margin: 0 0 4px;
@@ -136,6 +143,7 @@
   <div class="err" id="err"></div>
   <section id="wx" hidden aria-label="Sääasema"></section>
   <div id="grid"></div>
+  <section id="hp" hidden aria-label="Ilmalämpöpumppu"></section>
 </div>
 <dialog id="big"><img alt=""><p></p></dialog>
 
@@ -311,7 +319,7 @@ async function call(msg) {
 let cams = [], timer = null, bigCam = null, camTimers = [];
 
 function stopCamTimers() { camTimers.forEach(t => { clearTimeout(t); clearInterval(t); }); camTimers = []; }
-function stop() { clearTimeout(timer); timer = null; stopCamTimers(); wxStop(); wsClose(); cams = []; $("grid").innerHTML = ""; }
+function stop() { clearTimeout(timer); timer = null; stopCamTimers(); wxStop(); hpStop(); wsClose(); cams = []; $("grid").innerHTML = ""; }
 
 async function start() {
   stop();
@@ -320,6 +328,7 @@ async function start() {
   try {
     const states = await call({ type: "get_states" });
     wxStart(states);                     // sääasema omana rivinään, ei odoteta
+    hpStart(states);                     // lämpöpumppu kameroiden alle, ei odoteta
     const user = await call({ type: "auth/current_user" }).catch(() => null);
     const want = cfg.ids || [];
     const found = states.filter(s => s.entity_id.startsWith("camera.") &&
@@ -530,6 +539,97 @@ function wxRender(states) {
   }
   $("wx").innerHTML = tiles.join("");
   $("wx").hidden = !tiles.length;
+}
+
+// ---------- ilmalämpöpumppu ----------
+// Näyttää HA:n ilmastolaitteiden (climate.*, nyt Gree-ilmalämpöpumppu) tilan kameroiden
+// alla. Vain lukeminen: pumppua ei ohjata tältä sivulta. Tila päivitetään 30 s välein,
+// huonelämpötilan 24 h käyrä 10 min välein.
+const HP_MODE = { heat: "Lämmitys", cool: "Jäähdytys", auto: "Automaatti", dry: "Kuivatus",
+                  fan_only: "Puhallin", off: "Pois päältä", unavailable: "Ei yhteyttä", unknown: "Tuntematon" };
+const HP_FAN = { auto: "auto", low: "hidas", "medium low": "keskihidas", medium: "keskitaso",
+                 "medium high": "keskinopea", high: "nopea" };
+const HP_PRESET = { eco: "Eco", away: "Poissa", boost: "Tehostus", sleep: "Yötila" };
+let hp = null, hpTimers = [];
+
+function hpStop() { hpTimers.forEach(clearInterval); hpTimers = []; hp = null;
+                    $("hp").hidden = true; $("hp").innerHTML = ""; }
+
+function hpStart(states) {
+  hpStop();
+  const ids = states.filter(s => s.entity_id.startsWith("climate.")).map(s => s.entity_id);
+  if (!ids.length) return;
+  hp = { ids, states: {}, hist: {} };
+  hpRender(states);
+  hpHistory();
+  hpTimers.push(setInterval(async () => {
+    if (document.hidden || !hp) return;
+    try { hpRender(await call({ type: "get_states" })); } catch (e) {}
+  }, 30000));
+  hpTimers.push(setInterval(() => { if (!document.hidden) hpHistory(); }, 600000));
+}
+
+async function hpHistory() {
+  if (!hp) return;
+  try {
+    const r = await call({ type: "history/history_during_period",
+      start_time: new Date(Date.now() - 24 * 3600e3).toISOString(),
+      entity_ids: hp.ids, minimal_response: false, no_attributes: false,
+      significant_changes_only: false });
+    for (const id of hp.ids) {
+      const rows = r[id] || [];
+      hp.hist[id] = rows.map(x => [(x.lu || x.lc) * 1000, parseFloat(x.a?.current_temperature)])
+                        .filter(([t, v]) => isFinite(t) && isFinite(v));
+      // kuinka kauan pumppu on ollut päällä (muu tila kuin "off") viimeisen 24 h aikana
+      let on = 0;
+      rows.forEach((x, i) => {
+        const t = Math.max((x.lc || x.lu) * 1000, Date.now() - 24 * 3600e3);
+        const next = rows[i + 1] ? (rows[i + 1].lc || rows[i + 1].lu) * 1000 : Date.now();
+        if (x.s && !["off", "unavailable", "unknown"].includes(x.s)) on += Math.max(0, next - t);
+      });
+      hp.hist[id].on = rows.length ? on : null;
+    }
+    hpRender();
+  } catch (e) {}
+}
+
+function hpRender(states) {
+  if (!hp) return;
+  if (states) for (const s of states) if (hp.ids.includes(s.entity_id)) hp.states[s.entity_id] = s;
+  // hiljainen tila on Gree-integraatiossa erillinen kytkin samalla nimellä
+  const quiet = id => states?.find(s => s.entity_id === id.replace(/^climate\./, "switch.") + "_hiljainen_tila");
+  if (states) for (const id of hp.ids) if (hp.states[id]) hp.states[id].quiet = quiet(id)?.state;
+  const tiles = [];
+  for (const id of hp.ids) {
+    const s = hp.states[id]; if (!s) continue;
+    const a = s.attributes, name = a.friendly_name || id;
+    const mode = s.state, off = ["off", "unavailable", "unknown"].includes(mode);
+    const cur = isFinite(a.current_temperature) ? +a.current_temperature : null;
+    const lc = Date.parse(s.last_changed);
+    const since = lc ? `<time title="Tila muuttui viimeksi">${new Date(lc).toLocaleString("fi-FI",
+      { day: "numeric", month: "numeric", hour: "2-digit", minute: "2-digit" })}</time>` : "";
+    const det = off ? [] : [
+      a.temperature != null && `asetus <b>${fmt(+a.temperature, 0)} °C</b>`,
+      a.fan_mode && `puhallin ${HP_FAN[a.fan_mode] || a.fan_mode}`,
+      HP_PRESET[a.preset_mode],
+      s.quiet === "on" && "hiljainen tila",
+    ].filter(Boolean);
+    const h = hp.hist[id] || [];
+    const onH = h.on != null ? `päällä 24 h aikana ${fmt(h.on / 3600e3, 1)} h` : "";
+    tiles.push(`<div class="tile"><h3><span>${esc(name)}</span>${since}</h3>
+      <div class="big mode ${esc(mode)}"><i></i>${HP_MODE[mode] || esc(mode)}</div>
+      <div class="sub">${det.join(" · ")}</div><div class="sub">${onH}</div></div>`);
+    if (cur != null) {
+      const vs = h.map(p => p[1]);
+      tiles.push(`<div class="tile"><h3><span>Lämpötila pumpulla</span></h3>
+        <div class="big">${fmt(cur, a.target_temp_step >= 1 ? 0 : 1)} °C</div>
+        <div class="sub">pumpun oma anturi</div>
+        ${spark(h.concat([[Date.now(), cur]]))}
+        <div class="sub">${vs.length ? `24 h: ${fmt(Math.min(...vs), 0)} … ${fmt(Math.max(...vs), 0)} °C` : ""}</div></div>`);
+    }
+  }
+  $("hp").innerHTML = tiles.join("");
+  $("hp").hidden = !tiles.length;
 }
 
 // ---------- asetukset ----------
